@@ -1,103 +1,103 @@
-from pyfiglet import Figlet
-from colorama import Fore
-import re
-import subprocess
-from optparse import OptionParser
-import random
+# Gerekli modüller içe aktarılıyor
+import ipaddress               # IP ve CIDR adreslerini doğrulamak için
+import scapy.all as scapy     # Ağ paketlerini oluşturup göndermek için Scapy kütüphanesi
+from optparse import OptionParser  # Komut satırından parametre almak için
+from colorama import Fore, init     # Terminal yazılarına renk katmak için
+from rich.console import Console    # Log çıktıları için modern ve renkli bir konsol
+from pyfiglet import Figlet         # ASCII sanatıyla başlık yazdırmak için
+import re                           # IP ve MAC adreslerini metinlerden ayıklamak için regex
+from tabulate import tabulate       # Listeyi tablo biçiminde yazdırmak için
+import sys, os
+from contextlib import contextmanager  # stdout'u bastırmak için (gereksiz Scapy çıktısı)
 
+# Scapy'nin default terminal çıktılarını gizlemek için bir context manager tanımlanıyor
+@contextmanager
+def suppress_output():
+    with open(os.devnull, "w") as devnull:  # Çıktıyı çöp dosyasına yönlendir
+        old_stdout = sys.stdout
+        sys.stdout = devnull
+        try:
+            yield  # Bu bloğun içinde stdout bastırılır
+        finally:
+            sys.stdout = old_stdout  # İşlem bitince stdout eski haline döner
 
-"""
-    Usage: This tool changes the MAC address of machines. The usage is as follows:
+# Renkli çıktı desteğini başlat
+init(autoreset=True)
+console = Console()  # rich kütüphanesi ile renkli loglar yazmak için
 
-    The -i / --interface parameters are required and must be specified.
-    Example: sudo python -i eth0
-             sudo python -interface eth0
-
-    The -m / --mac parameter is optional. If not provided, a random MAC address will be assigned.
-    Example: sudo python -i eth0 -m 00:a2:b2:22:11:c2
-             sudo python -interface eth0 -mac 00:a2:b2:22:11:c2
-             sudo python -i eth0 -mac 00:a2:b2:22:11:c2
-             sudo python -interface eth0 -m 00:a2:b2:22:11:c2
-"""
-
-
-class Mac_Changer():
-    network_interfaces = [
-        "eth0", "eth1", "enp0s3", "eno1",
-        "wlan0", "wlan1", "wlp2s0", "wlp3s0"
-    ]
-
+# Ana sınıfımız: NetScanner
+class NetScanner():
     def __init__(self):
+        self.ip_address = '0.0.0.0'  # varsayılan IP (kullanıcı girmezse geçersiz olur)
+        self.mac_and_ip_address_list = list()  # IP ve MAC adreslerini tutacak liste
+        self.get_user_input()  # Kullanıcıdan IP al ve işlem başlat
 
-        figlet = Figlet(font='slant')
-        print(Fore.CYAN + figlet.renderText('ChangerMac'))
-
-        print(Fore.RED + f'''
--------------------------------------------------------     
-|                                                     |
-|                     AUTHOR:CHARON                   |
-|          github:{Fore.BLUE}https://github.com/mhmtylpr44{Fore.RED}       |
-|                                                     |
--------------------------------------------------------       
-
-        ''')
-
-        self.mac_address = ""
-        self.interface = ""
-        self.get_interface_and_mac_address()
-
-    def get_interface_and_mac_address(self):
-
+    def get_user_input(self):
+        # Komut satırından IP bilgisi almak için
         parser = OptionParser()
-        parser.add_option('-i', '--interface', dest='interface', help=
-        '''
-        Specify the network interface to use (e.g., eth0, wlan0, enp3s0).
-        You can list available interfaces using 'ip link' or 'ifconfig'.
-        This option is required if you want to bind the operation to a specific interface.
-        ''')
-        parser.add_option('-m', '--mac', dest='mac_address', help='''
-Specify the MAC address to use (e.g., 00:1A:2B:3C:4D:5E).
-The address must be in the standard format (XX:XX:XX:XX:XX:XX),
-where XX is a pair of hexadecimal digits (0-9, A-F).
-If not provided, a random MAC address will be generated.
-Ensure the MAC address is valid for your network configuration.       
-        ''')
+        parser.add_option('-i','--ip', dest='ipaddress',
+                          help='İp adresi girilecek. Örnekler: 10.0.2.1/24, 192.168.1.1')
 
-        (options, arguments) = parser.parse_args()
+        (argument, _) = parser.parse_args()
 
-        self.interface = options.interface
-        self.mac_address = options.mac_address
+        # IP veya CIDR blok doğrulayıcı
+        def is_valid_ip_or_cidr(input_str):
+            try:
+                ipaddress.ip_network(input_str, strict=False)  # CIDR olsun veya olmasın kabul eder
+                return True
+            except ValueError:
+                return False
 
-        if self.interface in self.network_interfaces:
-            if self.mac_address == None:
-                def generate_random_mac():
-                    mac = [0x02, random.randint(0x00, 0x7f)] + [random.randint(0x00, 0xff) for _ in range(4)]
-                    return ':'.join(f'{octet:02x}' for octet in mac)
-
-                self.mac_address = generate_random_mac()
-                self.change_to_mac_address()
-
+        if not argument.ipaddress:
+            console.log('[red]Lütfen bir ip adresi giriniz...[/red]')
+        else:
+            self.ip_address = argument.ipaddress
+            if is_valid_ip_or_cidr(self.ip_address):
+                self.brodcast_response()  # IP geçerliyse taramayı başlat
             else:
-                self.change_to_mac_address()
+                console.log('[red]Lütfen geçerli bir ip adresi giriniz[/red]')
 
+    def brodcast_response(self):
+        console.log('[green]Tarama Yapılıyor....[/green]')
+
+        # ARP isteği oluştur: hedef IP'ye "Sen kimsin?" paketi yollanır
+        arp_req = scapy.ARP(pdst=self.ip_address)
+        broadcat_response = scapy.Ether(dst='ff:ff:ff:ff:ff:ff')  # Broadcast (herkese git)
+        combine = broadcat_response/arp_req  # ARP + Ethernet paketini birleştir
+
+        scapy.conf.verb = 0  # Scapy'nin varsayılan çıktısını kapat
+
+        # Paketleri gönder ve yanıtları al (stdout gizlenmiş)
+        with suppress_output():
+            ans, uans = scapy.srp(combine, timeout=1)
+
+        # Yanıtlar içinde IP ve MAC adreslerini bulmak için regex kullan
+        for line in ans:
+            ip_match = re.search(r'psrc=([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)', str(line))
+            mac_match = re.search(r'hwsrc=([0-9a-fA-F:]{17})', str(line))
+
+            if ip_match and mac_match:
+                ip = ip_match.group(1)
+                mac = mac_match.group(1)
+                self.mac_and_ip_address_list.append([Fore.GREEN + ip, Fore.RED + mac])
+            else:
+                print("[-] IP veya MAC bulunamadı.")
+
+        self.show_list()
+
+    def show_list(self):
+        # Eğer liste boş değilse, tabloyu yazdır
+        if self.mac_and_ip_address_list:
+            print(Fore.BLUE + '*'*10 + '     Mac ve Ip Günlüğü     ' + '*'*10)
+            print(tabulate(self.mac_and_ip_address_list,
+                           headers=[Fore.GREEN + "IP", Fore.RED +  "MAC Adresi"],
+                           tablefmt="fancy_grid"))
         else:
-            print(
-                Fore.RED + "Specified network interface not found. Please provide a valid interface name (e.g., 'eth0' or 'wlan0').")
+            console.log('[red]Herhangi bir Günlük bulunamadı...[/red]')
 
-    def change_to_mac_address(self):
-
-        subprocess.call(['ifconfig', self.interface, 'down'])
-        subprocess.call(['ifconfig', self.interface, 'hw', 'ether', self.mac_address])
-        subprocess.call(['ifconfig', self.interface, 'up'])
-
-        ifconfig = subprocess.check_output(['ifconfig', self.interface])
-        mac_int_adress = re.search(r"\w\w:\w\w:\w\w:\w\w:\w\w:\w\w", str(ifconfig))
-
-        if str(mac_int_adress.group(0)) == str(self.mac_address):
-            print(Fore.GREEN + 'Changed to Mac Address')
-        else:
-            print(Fore.RED + 'Please check your input and try again. If the problem persists, contact support.')
-
-
+# Ana çalıştırma bloğu (komut satırından çalıştırıldığında burası çalışır)
 if __name__ == '__main__':
-    Mac_Changer()
+    figlet = Figlet(font='slant')
+    print(Fore.CYAN + figlet.renderText('NET SCANNER'))
+
+    NetScanner()  # Sınıf örneği oluşturulunca otomatik olarak çalışır
